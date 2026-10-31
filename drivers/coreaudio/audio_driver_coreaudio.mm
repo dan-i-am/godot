@@ -194,7 +194,12 @@ OSStatus AudioDriverCoreAudio::output_callback(void *inRefCon,
 		AudioBufferList *ioData) {
 	AudioDriverCoreAudio *ad = static_cast<AudioDriverCoreAudio *>(inRefCon);
 
-	if (!ad->active || !ad->try_lock()) {
+	const bool inactive = !ad->active;
+	const bool failed = !inactive && !ad->try_lock();
+#ifdef DEBUG_ENABLED
+	ad->lab_count(inNumberFrames, inactive ? 1 : (failed ? 2 : 0));
+#endif
+	if (inactive || failed) {
 		for (unsigned int i = 0; i < ioData->mNumberBuffers; i++) {
 			AudioBuffer *abuf = &ioData->mBuffers[i];
 			memset(abuf->mData, 0, abuf->mDataByteSize);

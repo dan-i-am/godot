@@ -30,6 +30,8 @@
 
 #include "audio_server.h"
 
+#include "audio_lock_lab.h"
+
 #include "core/config/project_settings.h"
 #include "core/debugger/engine_debugger.h"
 #include "core/error/error_macros.h"
@@ -2031,7 +2033,32 @@ void AudioServer::update_sample_playback_pitch_scale(const Ref<AudioSamplePlayba
 	return AudioDriver::get_singleton()->update_sample_playback_pitch_scale(p_playback, p_pitch_scale);
 }
 
+#ifdef DEBUG_ENABLED
+bool AudioServer::audio_lock_lab_begin() {
+	if (!AudioLockLab::begin()) {
+		return false;
+	}
+	AudioDriver::get_singleton()->lab_enabled.set();
+	return true;
+}
+Dictionary AudioServer::audio_lock_lab_end() {
+	Dictionary d = AudioLockLab::end();
+	if (!d.has("error")) {
+		AudioDriver::get_singleton()->lab_enabled.clear();
+	}
+	return d;
+}
+Dictionary AudioServer::audio_lock_lab_counters() const {
+	return AudioDriver::get_singleton()->lab_snapshot();
+}
+#endif
+
 void AudioServer::_bind_methods() {
+#ifdef DEBUG_ENABLED
+	ClassDB::bind_method(D_METHOD("audio_lock_lab_begin"), &AudioServer::audio_lock_lab_begin);
+	ClassDB::bind_method(D_METHOD("audio_lock_lab_end"), &AudioServer::audio_lock_lab_end);
+	ClassDB::bind_method(D_METHOD("audio_lock_lab_counters"), &AudioServer::audio_lock_lab_counters);
+#endif
 	ClassDB::bind_method(D_METHOD("set_bus_count", "amount"), &AudioServer::set_bus_count);
 	ClassDB::bind_method(D_METHOD("get_bus_count"), &AudioServer::get_bus_count);
 

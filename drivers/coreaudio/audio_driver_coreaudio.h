@@ -90,6 +90,9 @@ class AudioDriverCoreAudio : public AudioDriver {
 	void finish_input_device();
 
 public:
+#ifdef DEBUG_ENABLED
+	bool lab_counters_available() const override { return true; }
+#endif
 	virtual const char *get_name() const override {
 		return "CoreAudio";
 	}

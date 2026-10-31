@@ -34,6 +34,7 @@
 #include "core/io/image.h"
 #include "core/object/class_db.h"
 #include "scene/resources/image_texture.h"
+#include "servers/audio/audio_lock_lab.h"
 
 #include <thirdparty/misc/yuv2rgb.h>
 
@@ -256,6 +257,9 @@ void VideoStreamPlaybackTheora::video_write(th_ycbcr_buffer yuv) {
 }
 
 void VideoStreamPlaybackTheora::clear() {
+#ifdef DEBUG_ENABLED
+	uint64_t lab_cleanup = AudioLockLab::stamp();
+#endif
 	if (!file.is_null()) {
 		file.unref();
 	}
@@ -283,6 +287,9 @@ void VideoStreamPlaybackTheora::clear() {
 	has_audio = false;
 	theora_eos = false;
 	vorbis_eos = false;
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::CLEANUP, lab_cleanup);
+#endif
 }
 
 void VideoStreamPlaybackTheora::find_streams(th_setup_info *&ts) {
@@ -380,6 +387,9 @@ void VideoStreamPlaybackTheora::set_file(const String &p_file) {
 	th_setup_info *ts = nullptr;
 
 	clear();
+#ifdef DEBUG_ENABLED
+	uint64_t lab_phase = AudioLockLab::stamp();
+#endif
 
 	file = FileAccess::open(p_file, FileAccess::READ);
 	ERR_FAIL_COND_MSG(file.is_null(), "Cannot open file '" + p_file + "'.");
@@ -433,6 +443,9 @@ void VideoStreamPlaybackTheora::set_file(const String &p_file) {
 		ERR_FAIL_MSG("File '" + p_file + "' has no video stream.");
 	}
 
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::HEADERS, lab_phase);
+#endif
 	/* And now we have it all. Initialize decoders. */
 	td = th_decode_alloc(&ti, ts);
 	th_setup_free(ts);
@@ -458,10 +471,16 @@ void VideoStreamPlaybackTheora::set_file(const String &p_file) {
 	region.size.x = ti.pic_width;
 	region.size.y = ti.pic_height;
 
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::CODECS, lab_phase);
+#endif
 	Ref<Image> img = Image::create_empty(region.size.x, region.size.y, false, Image::FORMAT_RGBA8);
 	texture->set_image(img);
 	frame_data.resize(region.size.x * region.size.y * 4);
 
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::TEXTURE, lab_phase);
+#endif
 	frame_duration = (double)ti.fps_denominator / ti.fps_numerator;
 
 	if (has_audio) {
@@ -471,6 +490,9 @@ void VideoStreamPlaybackTheora::set_file(const String &p_file) {
 		audio_buffer = memnew_arr(float, audio_buffer_size);
 	}
 
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::AUDIO_BUFFERS, lab_phase);
+#endif
 	stream_data_offset = file->get_position() - oy.fill + oy.returned;
 	stream_data_size = file->get_length() - stream_data_offset;
 
@@ -491,7 +513,13 @@ void VideoStreamPlaybackTheora::set_file(const String &p_file) {
 		stream_length = MAX(stream_length, get_page_time(&page));
 	}
 
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::DURATION_SCAN, lab_phase);
+#endif
 	seek(0);
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::INITIAL_SEEK, lab_phase);
+#endif
 }
 
 double VideoStreamPlaybackTheora::get_time() const {
@@ -790,7 +818,13 @@ int VideoStreamPlaybackTheora::get_mix_rate() const {
 }
 
 VideoStreamPlaybackTheora::VideoStreamPlaybackTheora() {
+#ifdef DEBUG_ENABLED
+	uint64_t lab_construct = AudioLockLab::stamp();
+#endif
 	texture.instantiate();
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::CONSTRUCT, lab_construct);
+#endif
 }
 
 VideoStreamPlaybackTheora::~VideoStreamPlaybackTheora() {

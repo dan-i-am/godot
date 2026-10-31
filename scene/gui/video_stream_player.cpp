@@ -34,6 +34,7 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "scene/main/scene_tree.h"
+#include "servers/audio/audio_lock_lab.h"
 #include "servers/audio/audio_server.h"
 #include "servers/display/accessibility_server.h"
 
@@ -264,7 +265,15 @@ bool VideoStreamPlayer::has_loop() const {
 }
 
 void VideoStreamPlayer::set_stream(const Ref<VideoStream> &p_stream) {
+#ifdef DEBUG_ENABLED
+	AudioLockLab::Assignment lab_assignment(get_instance_id());
+	uint64_t lab_phase = AudioLockLab::stamp();
+	uint64_t lab_wait = 0, lab_hold = 0, lab_post = 0;
+#endif
 	stop();
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::INTERNAL_STOP, lab_phase);
+#endif
 
 	// Make sure to handle stream changes seamlessly, e.g. when done via
 	// translation remapping.
@@ -272,16 +281,36 @@ void VideoStreamPlayer::set_stream(const Ref<VideoStream> &p_stream) {
 		stream->disconnect_changed(callable_mp(this, &VideoStreamPlayer::set_stream));
 	}
 
+#ifdef DEBUG_ENABLED
+	lab_wait = AudioLockLab::stamp();
+#endif
 	AudioServer::get_singleton()->lock();
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::LOCK1_WAIT, lab_wait);
+	lab_hold = lab_phase = AudioLockLab::stamp();
+#endif
 	mix_buffer.resize(AudioServer::get_singleton()->thread_get_mix_buffer_size());
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::RESIZE, lab_phase);
+#endif
 	stream = p_stream;
+#ifdef DEBUG_ENABLED
+	AudioLockLab::mark(AudioLockLab::STREAM_REF, lab_phase);
+#endif
 	if (stream.is_valid()) {
 		stream->set_audio_track(audio_track);
 		playback = stream->instantiate_playback();
 	} else {
 		playback = Ref<VideoStreamPlayback>();
 	}
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::FACTORY_ASSIGN, lab_phase);
+	AudioLockLab::elapsed(AudioLockLab::LOCK1_HOLD, lab_hold);
+#endif
 	AudioServer::get_singleton()->unlock();
+#ifdef DEBUG_ENABLED
+	lab_post = AudioLockLab::stamp();
+#endif
 
 	if (stream.is_valid()) {
 		stream->connect_changed(callable_mp(this, &VideoStreamPlayer::set_stream).bind(stream));
@@ -302,12 +331,23 @@ void VideoStreamPlayer::set_stream(const Ref<VideoStream> &p_stream) {
 
 		const int channels = playback->get_channels();
 
+#ifdef DEBUG_ENABLED
+		lab_wait = AudioLockLab::stamp();
+#endif
 		AudioServer::get_singleton()->lock();
+#ifdef DEBUG_ENABLED
+		AudioLockLab::elapsed(AudioLockLab::LOCK2_WAIT, lab_wait);
+		lab_hold = lab_phase = AudioLockLab::stamp();
+#endif
 		if (channels > 0) {
 			resampler.setup(channels, playback->get_mix_rate(), AudioServer::get_singleton()->get_mix_rate(), buffering_ms, 0);
 		} else {
 			resampler.clear();
 		}
+#ifdef DEBUG_ENABLED
+		AudioLockLab::elapsed(AudioLockLab::RESAMPLER, lab_phase);
+		AudioLockLab::elapsed(AudioLockLab::LOCK2_HOLD, lab_hold);
+#endif
 		AudioServer::get_singleton()->unlock();
 
 		if (channels > 0) {
@@ -316,11 +356,25 @@ void VideoStreamPlayer::set_stream(const Ref<VideoStream> &p_stream) {
 
 	} else {
 		texture.unref();
+#ifdef DEBUG_ENABLED
+		lab_wait = AudioLockLab::stamp();
+#endif
 		AudioServer::get_singleton()->lock();
+#ifdef DEBUG_ENABLED
+		AudioLockLab::elapsed(AudioLockLab::LOCK2_WAIT, lab_wait);
+		lab_hold = lab_phase = AudioLockLab::stamp();
+#endif
 		resampler.clear();
+#ifdef DEBUG_ENABLED
+		AudioLockLab::elapsed(AudioLockLab::RESAMPLER, lab_phase);
+		AudioLockLab::elapsed(AudioLockLab::LOCK2_HOLD, lab_hold);
+#endif
 		AudioServer::get_singleton()->unlock();
 	}
 
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::POST_SETUP, lab_post);
+#endif
 	queue_redraw();
 
 	if (!expand) {

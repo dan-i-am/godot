@@ -76,6 +76,40 @@ protected:
 #endif
 
 public:
+#ifdef DEBUG_ENABLED
+	SafeFlag lab_enabled;
+	SafeNumeric<uint64_t> lab_callbacks, lab_frames, lab_inactive_callbacks, lab_inactive_frames, lab_failed_callbacks, lab_failed_frames;
+	virtual bool lab_counters_available() const { return false; }
+	void lab_count(unsigned frames, int outcome) {
+		if (!lab_enabled.is_set()) {
+			return;
+		}
+		lab_callbacks.increment();
+		lab_frames.add(frames);
+		if (outcome == 1) {
+			lab_inactive_callbacks.increment();
+			lab_inactive_frames.add(frames);
+		}
+		if (outcome == 2) {
+			lab_failed_callbacks.increment();
+			lab_failed_frames.add(frames);
+		}
+	}
+	Dictionary lab_snapshot() const {
+		Dictionary d;
+		d["available"] = lab_counters_available();
+		if (!lab_counters_available()) {
+			return d;
+		}
+		d["callbacks"] = lab_callbacks.get();
+		d["requested_frames"] = lab_frames.get();
+		d["inactive_callbacks"] = lab_inactive_callbacks.get();
+		d["inactive_frames"] = lab_inactive_frames.get();
+		d["lock_failed_callbacks"] = lab_failed_callbacks.get();
+		d["lock_failed_frames"] = lab_failed_frames.get();
+		return d;
+	}
+#endif
 	double get_time_since_last_mix(); //useful for video -> audio sync
 	double get_time_to_next_mix();
 
@@ -353,6 +387,11 @@ protected:
 	static void _bind_methods();
 
 public:
+#ifdef DEBUG_ENABLED
+	bool audio_lock_lab_begin();
+	Dictionary audio_lock_lab_end();
+	Dictionary audio_lock_lab_counters() const;
+#endif
 	_FORCE_INLINE_ int get_channel_count() const {
 		switch (get_speaker_mode()) {
 			case SPEAKER_MODE_STEREO:
