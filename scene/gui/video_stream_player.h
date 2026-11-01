@@ -40,6 +40,12 @@ class VideoStreamPlayer : public Control {
 	Ref<VideoStreamPlayback> playback;
 	Ref<VideoStream> stream;
 
+	// Read by the audio callback under the driver mutex. Assignment closes this
+	// gate under that mutex before touching playback or resampler storage.
+	bool audio_mixing_ready = false;
+	// Main-thread reentrancy guard; not a general concurrent-setter lock.
+	bool stream_assignment_in_progress = false;
+
 	int sp_get_channel_count() const;
 	bool mix(AudioFrame *p_buffer, int p_frames);
 

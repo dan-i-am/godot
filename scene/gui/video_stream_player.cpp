@@ -65,6 +65,9 @@ int VideoStreamPlayer::_audio_mix_callback(void *p_udata, const float *p_data, i
 	ERR_FAIL_NULL_V(p_data, 0);
 
 	VideoStreamPlayer *vp = static_cast<VideoStreamPlayer *>(p_udata);
+	if (!vp->audio_mixing_ready) {
+		return 0;
+	}
 
 	int todo = MIN(vp->resampler.get_writer_space(), p_frames);
 
@@ -86,6 +89,10 @@ void VideoStreamPlayer::_mix_audios(void *p_self) {
 
 // Called from audio thread
 void VideoStreamPlayer::_mix_audio() {
+	// Must precede every access to playback, stream, or resampler state.
+	if (!audio_mixing_ready) {
+		return;
+	}
 	if (stream.is_null()) {
 		return;
 	}
@@ -265,35 +272,44 @@ bool VideoStreamPlayer::has_loop() const {
 }
 
 void VideoStreamPlayer::set_stream(const Ref<VideoStream> &p_stream) {
+	ERR_FAIL_COND_MSG(stream_assignment_in_progress, "Reentrant VideoStreamPlayer stream assignment is unsupported.");
+	stream_assignment_in_progress = true;
 #ifdef DEBUG_ENABLED
 	AudioLockLab::Assignment lab_assignment(get_instance_id());
+	uint64_t lab_wait = AudioLockLab::stamp();
+#endif
+	// Wait for any in-flight mixer, then exclude only this player's future mixes.
+	AudioServer::get_singleton()->lock();
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::LOCK1_WAIT, lab_wait);
+	uint64_t lab_hold = AudioLockLab::stamp();
+#endif
+	audio_mixing_ready = false;
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::LOCK1_HOLD, lab_hold);
+#endif
+	AudioServer::get_singleton()->unlock();
+
+	// No early returns below: leave the gate closed until all state is coherent,
+	// and always release the assignment guard. Nested calls are rejected above.
+	const Ref<VideoStream> next_stream = p_stream;
+#ifdef DEBUG_ENABLED
 	uint64_t lab_phase = AudioLockLab::stamp();
-	uint64_t lab_wait = 0, lab_hold = 0, lab_post = 0;
 #endif
 	stop();
 #ifdef DEBUG_ENABLED
 	AudioLockLab::mark(AudioLockLab::INTERNAL_STOP, lab_phase);
 #endif
-
-	// Make sure to handle stream changes seamlessly, e.g. when done via
-	// translation remapping.
 	if (stream.is_valid()) {
 		stream->disconnect_changed(callable_mp(this, &VideoStreamPlayer::set_stream));
 	}
 
-#ifdef DEBUG_ENABLED
-	lab_wait = AudioLockLab::stamp();
-#endif
-	AudioServer::get_singleton()->lock();
-#ifdef DEBUG_ENABLED
-	AudioLockLab::elapsed(AudioLockLab::LOCK1_WAIT, lab_wait);
-	lab_hold = lab_phase = AudioLockLab::stamp();
-#endif
-	mix_buffer.resize(AudioServer::get_singleton()->thread_get_mix_buffer_size());
+	// The gate also excludes resize/setup/free operations from the audio reader.
+	const Error mix_buffer_error = mix_buffer.resize(AudioServer::get_singleton()->thread_get_mix_buffer_size());
 #ifdef DEBUG_ENABLED
 	AudioLockLab::mark(AudioLockLab::RESIZE, lab_phase);
 #endif
-	stream = p_stream;
+	stream = next_stream;
 #ifdef DEBUG_ENABLED
 	AudioLockLab::mark(AudioLockLab::STREAM_REF, lab_phase);
 #endif
@@ -305,81 +321,76 @@ void VideoStreamPlayer::set_stream(const Ref<VideoStream> &p_stream) {
 	}
 #ifdef DEBUG_ENABLED
 	AudioLockLab::elapsed(AudioLockLab::FACTORY_ASSIGN, lab_phase);
-	AudioLockLab::elapsed(AudioLockLab::LOCK1_HOLD, lab_hold);
+	uint64_t lab_post = AudioLockLab::stamp();
 #endif
-	AudioServer::get_singleton()->unlock();
-#ifdef DEBUG_ENABLED
-	lab_post = AudioLockLab::stamp();
-#endif
-
 	if (stream.is_valid()) {
 		stream->connect_changed(callable_mp(this, &VideoStreamPlayer::set_stream).bind(stream));
 	}
-
 	if (texture.is_valid()) {
 		texture->disconnect_changed(callable_mp(this, &VideoStreamPlayer::texture_changed));
 	}
 
+	bool ready = false;
 	if (playback.is_valid()) {
 		playback->set_paused(paused);
 		texture = playback->get_texture();
-
 		if (texture.is_valid()) {
 			texture_size = texture->get_size();
 			texture->connect_changed(callable_mp(this, &VideoStreamPlayer::texture_changed).bind(texture));
 		}
-
 		const int channels = playback->get_channels();
-
 #ifdef DEBUG_ENABLED
-		lab_wait = AudioLockLab::stamp();
-#endif
-		AudioServer::get_singleton()->lock();
-#ifdef DEBUG_ENABLED
-		AudioLockLab::elapsed(AudioLockLab::LOCK2_WAIT, lab_wait);
-		lab_hold = lab_phase = AudioLockLab::stamp();
+		lab_phase = AudioLockLab::stamp();
 #endif
 		if (channels > 0) {
-			resampler.setup(channels, playback->get_mix_rate(), AudioServer::get_singleton()->get_mix_rate(), buffering_ms, 0);
+			const int source_rate = playback->get_mix_rate();
+			const int target_rate = AudioServer::get_singleton()->get_mix_rate();
+			if (source_rate > 0 && target_rate > 0) {
+				ready = resampler.setup(channels, source_rate, target_rate, buffering_ms, 0) == OK && mix_buffer_error == OK;
+			}
+			if (!ready) {
+				resampler.clear();
+			}
+			// Even an invalid format gets a callback: the closed gate returns zero
+			// accepted frames rather than letting a backend call a null function pointer.
+			playback->set_mix_callback(_audio_mix_callback, this);
 		} else {
 			resampler.clear();
 		}
 #ifdef DEBUG_ENABLED
 		AudioLockLab::elapsed(AudioLockLab::RESAMPLER, lab_phase);
-		AudioLockLab::elapsed(AudioLockLab::LOCK2_HOLD, lab_hold);
 #endif
-		AudioServer::get_singleton()->unlock();
-
-		if (channels > 0) {
-			playback->set_mix_callback(_audio_mix_callback, this);
-		}
-
 	} else {
 		texture.unref();
 #ifdef DEBUG_ENABLED
-		lab_wait = AudioLockLab::stamp();
-#endif
-		AudioServer::get_singleton()->lock();
-#ifdef DEBUG_ENABLED
-		AudioLockLab::elapsed(AudioLockLab::LOCK2_WAIT, lab_wait);
-		lab_hold = lab_phase = AudioLockLab::stamp();
+		lab_phase = AudioLockLab::stamp();
 #endif
 		resampler.clear();
 #ifdef DEBUG_ENABLED
 		AudioLockLab::elapsed(AudioLockLab::RESAMPLER, lab_phase);
-		AudioLockLab::elapsed(AudioLockLab::LOCK2_HOLD, lab_hold);
 #endif
-		AudioServer::get_singleton()->unlock();
 	}
-
 #ifdef DEBUG_ENABLED
 	AudioLockLab::elapsed(AudioLockLab::POST_SETUP, lab_post);
+	lab_wait = AudioLockLab::stamp();
 #endif
-	queue_redraw();
+	// Publish initialized state via the same mutex used by the audio callback.
+	AudioServer::get_singleton()->lock();
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::LOCK2_WAIT, lab_wait);
+	lab_hold = AudioLockLab::stamp();
+#endif
+	audio_mixing_ready = ready;
+#ifdef DEBUG_ENABLED
+	AudioLockLab::elapsed(AudioLockLab::LOCK2_HOLD, lab_hold);
+#endif
+	AudioServer::get_singleton()->unlock();
 
+	queue_redraw();
 	if (!expand) {
 		update_minimum_size();
 	}
+	stream_assignment_in_progress = false;
 }
 
 Ref<VideoStream> VideoStreamPlayer::get_stream() const {

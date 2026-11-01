@@ -129,7 +129,7 @@ inline Dictionary end() {
 		rows.push_back(row);
 	}
 	out["schema"] = 1;
-	out["variant"] = "instrumented_baseline";
+	out["variant"] = "gated_replacement";
 	out["run_id"] = run;
 	out["records"] = rows;
 	out["overflow"] = overflow;
